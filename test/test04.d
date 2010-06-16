@@ -2,7 +2,7 @@
  * without locale
  */
 
-version = use_bigint_method;
+version = use_bigint_method_1;
 
 import std.conv;
 import std.math;
@@ -74,14 +74,14 @@ real toReal(String)(String str)// pure @safe
     if (negate || input[0] == '+')
         input = input[1 .. $];
 
-version (use_bigint_method)
+version (use_bigint_method_1)
 {
     /*
      * Read mantissa digits.  We use a bigint-like way to deal with long
      * mantissa without dropping precision.
      */
     uintmax_t mantHi, mantLo;
-    bool overprec;
+    uint overprec;
     bool inFrac;
     int  expFix;
     uint ndigits;
@@ -113,7 +113,7 @@ L_scanMantissa:
         {
             mantLo = mantLo*10 + digit;
         }
-        else if (!overprec)
+        else if (overprec == 0)
         {
             enum HBIT = 4*uintmax_t.sizeof;
             enum HALF = (cast(uintmax_t) 1u << HBIT) - 1u;
@@ -126,18 +126,68 @@ L_scanMantissa:
             mantHi = tmpH + (tmpM >> HBIT);
 
             if (mantHi >= (mantHi.max / 10))
-                overprec = true;
+                overprec = 1;
         }
     }
 L_scanMantissa_end:
     // compose the mantissa part
     result = mantHi * 0x1.p64 + mantLo;
 }
+else version (use_bigint_method_2)
+{
+    alias uint part_t;
+    enum HBIT = 4*part_t.sizeof;
+    enum HALF = (cast(part_t) 1u << HBIT) - 1u;
+
+    part_t[] mantParts;
+    bool inFrac;
+    int  expFix;
+
+L_scanMantissa:
+    for (; input.length; input = input[1 .. $])
+    {
+        switch (input[0])
+        {
+            case '.':
+                assert(!inFrac);
+                inFrac = true;
+                continue;
+
+            case 'E', 'e':
+                //break L_scanMantissa; @@@ CTFE
+                goto L_scanMantissa_end;
+
+            default:
+                break;
+        }
+        auto digit = input[0] - '0';
+
+        if (inFrac)
+            --expFix;
+
+        part_t carry = digit;
+
+        foreach (i, part; mantParts)
+        {
+            const tmpL = (part  & HALF) * 10 + carry;
+            const tmpH = (part >> HBIT) * 10 + (tmpL >> HBIT);
+            mantParts[i] = (tmpH << HBIT) + (tmpL & HALF);
+            carry        =  tmpH >> HBIT;
+        }
+        if (carry)
+            mantParts ~= carry;
+    }
+L_scanMantissa_end:
+    // compose the mantissa part
+    result = 0;
+    foreach_reverse (part; mantParts)
+        result = result*0x1.p64 + part;
+}
 else
 {
     /*
      * Read in mantissa.  We will read higher digits in mant in the exact
-     * form (i.e. integer), and then read lower digits in aux.  aux can be
+     * form (i.e. integer), and then read lower digits in aux.  aux will be
      * zero if the represented mantissa is short enough to fit in mant.
      *
      * The mantissa is read as the following form regardless of the original
